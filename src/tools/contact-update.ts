@@ -4,6 +4,9 @@ import type {Config} from './types.js';
 import {makePeopleApiCall} from '../utils/contacts-api.js';
 import {jsonResult} from '../utils/response.js';
 import {strictSchemaWithAliases} from '../utils/schema.js';
+import {
+	computeDiff, DIFF_PERSON_FIELDS, displayName, extractFields, isDryRun, writeJournalEntry, type PeoplePerson,
+} from '../utils/guardrail.js';
 
 const inputSchema = strictSchemaWithAliases({
 	resourceName: z.string().describe('The resource name of the contact to update (e.g., "people/c12345")'),
@@ -87,8 +90,56 @@ export function registerContactUpdate(server: McpServer, config: Config): void {
 			const params = new URLSearchParams();
 			params.set('updatePersonFields', updatePersonFields.join(','));
 
-			const result = await makePeopleApiCall('PATCH', `/${resourceName}:updateContact?${params.toString()}`, config.token, person);
-			return jsonResult(outputSchema.parse(result));
+			// Guardrail: "before" state via GET, diff on the provided fields only, journal + dry-run.
+			const beforeParams = new URLSearchParams({personFields: DIFF_PERSON_FIELDS});
+			const beforeRaw = await makePeopleApiCall('GET', `/${resourceName}?${beforeParams.toString()}`, config.token) as PeoplePerson;
+			const before = extractFields(beforeRaw);
+			const after = {...before};
+			if (givenName !== undefined) {
+				after.givenName = givenName;
+			}
+
+			if (familyName !== undefined) {
+				after.familyName = familyName;
+			}
+
+			if (emailAddresses !== undefined) {
+				after.emails = emailAddresses.map((e: {value: string}) => e.value).filter(Boolean).join(', ');
+			}
+
+			if (phoneNumbers !== undefined) {
+				after.phones = phoneNumbers.map((p: {value: string}) => p.value).filter(Boolean).join(', ');
+			}
+
+			if (organization !== undefined) {
+				after.organization = organization;
+			}
+
+			if (jobTitle !== undefined) {
+				after.jobTitle = jobTitle;
+			}
+
+			if (notes !== undefined) {
+				after.notes = notes;
+			}
+
+			const diff = computeDiff(before, after);
+			const name = displayName(after);
+
+			if (isDryRun()) {
+				writeJournalEntry({op: 'contact_update', status: 'DRY-RUN', name, resourceName, diff});
+				return jsonResult({resourceName, dryRun: true, message: `DRY-RUN : contact "${name}" NON modifié (diff journalisé)`, diff});
+			}
+
+			try {
+				const result = await makePeopleApiCall('PATCH', `/${resourceName}:updateContact?${params.toString()}`, config.token, person);
+				const parsed = outputSchema.parse(result);
+				writeJournalEntry({op: 'contact_update', status: 'OK', name, resourceName, diff});
+				return jsonResult(parsed);
+			} catch (error) {
+				writeJournalEntry({op: 'contact_update', status: 'ÉCHEC', name, resourceName, diff});
+				throw error;
+			}
 		},
 	);
 }

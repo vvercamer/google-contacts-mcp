@@ -4,6 +4,7 @@ import type {Config} from './types.js';
 import {makePeopleApiCall} from '../utils/contacts-api.js';
 import {jsonResult} from '../utils/response.js';
 import {strictSchemaWithAliases} from '../utils/schema.js';
+import {computeDiff, displayName, extractFields, isDryRun, writeJournalEntry} from '../utils/guardrail.js';
 
 const inputSchema = strictSchemaWithAliases({
 	givenName: z.string().optional().describe('First name'),
@@ -76,8 +77,33 @@ export function registerContactCreate(server: McpServer, config: Config): void {
 				person.biographies = [{value: notes, contentType: 'TEXT_PLAIN'}];
 			}
 
-			const result = await makePeopleApiCall('POST', '/people:createContact', config.token, person);
-			return jsonResult(outputSchema.parse(result));
+			// Guardrail: diff (create → all provided fields) + journal + dry-run.
+			const after = {
+				givenName: givenName ?? '',
+				familyName: familyName ?? '',
+				emails: (emailAddresses ?? []).map((e: {value: string}) => e.value).filter(Boolean).join(', '),
+				phones: (phoneNumbers ?? []).map((p: {value: string}) => p.value).filter(Boolean).join(', '),
+				organization: organization ?? '',
+				jobTitle: jobTitle ?? '',
+				notes: notes ?? '',
+			};
+			const diff = computeDiff(extractFields(undefined), after);
+			const name = displayName(after);
+
+			if (isDryRun()) {
+				writeJournalEntry({op: 'contact_create', status: 'DRY-RUN', name, diff});
+				return jsonResult({resourceName: '(dry-run)', dryRun: true, message: `DRY-RUN : contact "${name}" NON créé (diff journalisé)`, diff});
+			}
+
+			try {
+				const result = await makePeopleApiCall('POST', '/people:createContact', config.token, person);
+				const parsed = outputSchema.parse(result);
+				writeJournalEntry({op: 'contact_create', status: 'OK', name, resourceName: parsed.resourceName, diff});
+				return jsonResult(parsed);
+			} catch (error) {
+				writeJournalEntry({op: 'contact_create', status: 'ÉCHEC', name, diff});
+				throw error;
+			}
 		},
 	);
 }

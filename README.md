@@ -2,6 +2,23 @@
 
 MCP server for Google Contacts - list, search, and manage contacts.
 
+> **Fork of [domdomegg/google-contacts-mcp](https://github.com/domdomegg/google-contacts-mcp)** by vvercamer. MIT License (upstream author: Adam Jones / domdomegg). This fork adds a **write guardrail** (diff + journaling + dry-run) — see below.
+
+---
+
+## 🔱 Fork — write guardrail (diff + journal + dry-run)
+
+This fork enforces a **code-level guardrail** on every write (`contact_create` / `contact_update` / `contact_delete`): before calling the People API, it computes a **field-by-field diff** (the "before" state is fetched via `contact_get` for update/delete) and **writes it to a Markdown journal**. No silent writes.
+
+- The logic is isolated in **`src/utils/guardrail.ts`** (single module → easy upstream rebase).
+- New environment variables:
+  - `DRY_RUN=1` → computes and journals the diff **without** writing to Google (recommended default when starting). Set `DRY_RUN=0` to enable real writes.
+  - `VAULT_JOURNAL_PATH` → path to the Markdown journal (appended to). Set it in a local `.env` (gitignored); see [`.env.example`](.env.example).
+- Run (reads secrets from the macOS Keychain): **`./start-guardrail.sh`** (HTTP, `DRY_RUN=1` by default).
+- ⚠️ OAuth: create a **"Web application"** client with redirect URI `http://localhost:3000/callback` (the server acts as an OAuth proxy). Not a "Desktop" client.
+
+---
+
 ## Use Cases
 
 **Email lookup**: "See the latest JIRA ticket that's come in. Can we email Sarah from the security team to get their input?" → finds Sarah's email and drafts the message.
